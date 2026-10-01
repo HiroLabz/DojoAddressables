@@ -1,0 +1,105 @@
+name: Deploy Addressables to S3
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment to publish from the latest main commit
+        required: true
+        type: choice
+        options: [development]
+
+permissions:
+  contents: read
+
+jobs:
+  detect:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      envs: ${{ steps.changed.outputs.envs }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Determine changed environment folders
+        id: changed
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+          AFTER_SHA: ${{ github.sha }}
+          REQUESTED_ENV: ${{ inputs.environment }}
+        run: python3 .github/scripts/addressables.py detect
+
+  deploy:
+    needs: detect
+    if: needs.detect.outputs.envs != '[]'
+    strategy:
+      matrix:
+        env: ${{ fromJson(needs.detect.outputs.envs) }}
+      fail-fast: false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    environment: ${{ matrix.env }}
+    concurrency:
+      group: addressables-deploy-${{ matrix.env }}
+      cancel-in-progress: false
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Resolve main after acquiring the environment's concurrency slot.
+          # A delayed/retried run must not restore an older catalog.
+          ref: main
+          persist-credentials: false
+
+      - name: Check environment still exists on main
+        id: source
+        env:
+          ENV_NAME: ${{ matrix.env }}
+        run: |
+          set -euo pipefail
+          if [ -d "$ENV_NAME" ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Publishing commit $(git rev-parse HEAD)"
+          else
+            echo "Skipping environment removed from main: $ENV_NAME"
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Validate folder and configuration
+        if: steps.source.outputs.exists == 'true'
+        env:
+          ENV_NAME: ${{ matrix.env }}
+          S3_BUCKET: ${{ vars.S3_BUCKET }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+          S3_PREFIX: ${{ vars.S3_PREFIX || 'addressables' }}
+        run: python3 .github/scripts/addressables.py validate
+
+      - name: Authenticate to AWS via OIDC
+        if: steps.source.outputs.exists == 'true'
+        uses: aws-actions/configure-aws-credentials@v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: addressables-${{ matrix.env }}-${{ github.run_id }}
+
+      - name: Publish bundles, then catalogues, then hashes
+        if: steps.source.outputs.exists == 'true'
+        env:
+          ENV_NAME: ${{ matrix.env }}
+          S3_BUCKET: ${{ vars.S3_BUCKET }}
+          S3_PREFIX: ${{ vars.S3_PREFIX || 'addressables' }}
+        run: |
+          set -euo pipefail
+          dest="s3://${S3_BUCKET}/${S3_PREFIX}/"
+          aws s3 sync "$ENV_NAME/" "$dest" --exclude '*' --include '*.bundle' --no-follow-symlinks --cache-control 'public,max-age=31536000,immutable' --only-show-errors
+          # Always copy mutable metadata, including nested platform catalogs.
+          aws s3 cp "$ENV_NAME/" "$dest" --recursive --exclude '*' --include 'catalog*.bin' --include 'catalog*.json' --include '*/catalog*.bin' --include '*/catalog*.json' --no-follow-symlinks --cache-control 'public,max-age=60' --only-show-errors
+          aws s3 cp "$ENV_NAME/" "$dest" --recursive --exclude '*' --include 'catalog*.hash' --include '*/catalog*.hash' --no-follow-symlinks --cache-control 'public,max-age=60' --only-show-errors
