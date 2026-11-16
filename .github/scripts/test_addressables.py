@@ -1,4 +1,5 @@
 """Run: python -m unittest discover -s .github/scripts -v"""
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -85,16 +86,83 @@ class DeploymentTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "missing"):
                 addressables.detect()
 
-    def assets(self, folder="development", extension="bin"):
+    def assets(self, folder="development", extension="bin", version=1):
         self.write(f"{folder}/asset.bundle")
-        self.write(f"{folder}/catalog_1.{extension}")
-        self.write(f"{folder}/catalog_1.hash")
+        self.write(f"{folder}/catalog_{version}.{extension}")
+        self.write(f"{folder}/catalog_{version}.hash", f"hash{version}")
+        if folder == "development":
+            self.version(version)
+
+    def version(self, number, catalog=None, path="development/version.json"):
+        catalog = catalog or f"catalog_{number}.bin"
+        self.write(path, json.dumps({"version": number, "catalog": catalog}))
 
     def test_flat_and_nested_output(self):
         self.assets()
         self.assets("development/Android")
         self.assets("development/WebGL", "json")
         addressables.validate()
+
+    def test_missing_version_file(self):
+        self.assets()
+        Path("development/version.json").unlink()
+        with self.assertRaisesRegex(ValueError, "Missing .*version.json"):
+            addressables.validate()
+
+    def test_version_names_a_missing_catalog(self):
+        self.assets()
+        self.version(2)
+        with self.assertRaisesRegex(ValueError, "not in development"):
+            addressables.validate()
+
+    def test_bad_version_files(self):
+        self.assets()
+        for content in ("not json", "[1]", '{"catalog": "catalog_1.bin"}',
+                        '{"version": -1, "catalog": "catalog_1.bin"}',
+                        '{"version": 1.5, "catalog": "catalog_1.bin"}',
+                        '{"version": "1", "catalog": "catalog_1.bin"}',
+                        '{"version": true, "catalog": "catalog_1.bin"}',
+                        '{"version": 1}', '{"version": 1, "catalog": "../catalog_1.bin"}',
+                        '{"version": 1, "catalog": "sub/catalog_1.bin"}',
+                        '{"version": 1, "catalog": "catalog_1.hash"}'):
+            with self.subTest(content=content):
+                self.write("development/version.json", content)
+                with self.assertRaises(ValueError):
+                    addressables.validate()
+
+    def check(self, published=None, published_hash=None):
+        env = {"PUBLISHED_VERSION_FILE": "", "PUBLISHED_HASH_FILE": ""}
+        if published is not None:
+            self.version(published, path="published/version.json")
+            env["PUBLISHED_VERSION_FILE"] = "published/version.json"
+        if published_hash is not None:
+            self.write("published/catalog.hash", published_hash)
+            env["PUBLISHED_HASH_FILE"] = "published/catalog.hash"
+        with patch.dict(os.environ, env):
+            addressables.check_version()
+
+    def test_first_version_must_be_zero(self):
+        self.assets(version=0)
+        self.check()
+        self.assets(version=1)
+        with self.assertRaisesRegex(ValueError, "must be 0"):
+            self.check()
+
+    def test_next_version_is_one_higher(self):
+        self.assets(version=4)
+        self.check(published=3)
+        for published, message in ((5, "lower"), (2, "skips ahead")):
+            with self.subTest(published=published):
+                with self.assertRaisesRegex(ValueError, message):
+                    self.check(published=published)
+
+    def test_same_version_only_when_unchanged(self):
+        self.assets(version=3)
+        self.check(published=3, published_hash="hash3")
+        with self.assertRaisesRegex(ValueError, "different content"):
+            self.check(published=3, published_hash="changed")
+        with self.assertRaisesRegex(ValueError, "different content"):
+            self.check(published=3)
 
     def test_missing_matching_hash(self):
         self.assets()
