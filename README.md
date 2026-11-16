@@ -73,6 +73,9 @@ organization Actions settings.
 - Grant the role `s3:ListBucket` on the bucket, restricted to the configured
   prefix, and `s3:PutObject` plus `s3:AbortMultipartUpload` on objects under that
   prefix. Customer-managed KMS encryption requires corresponding key permissions.
+- Also grant `s3:GetObject` on `version.json` and `catalog*.hash` under the prefix.
+  The version check reads the published ones; without it every publish stops with
+  "Could not read".
 - Configure download access separately from upload access. With CloudFront OAC,
   grant the distribution read access through the bucket policy and keep S3 public
   access blocked. Set cache behavior to respect the catalog/hash 60-second TTL.
@@ -83,19 +86,46 @@ organization Actions settings.
 References: [GitHub OIDC with AWS](https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-in-aws),
 [CloudFront OAC](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/private-content-restricting-access-to-s3.html).
 
+### Content versions
+
+Every publish is one release with a whole-number version: 0 for the first, then one
+higher each time. The creator's **Tools > Dojo > Addressables > 3. Build Content
+(Next Version)** builds it with its own catalog (`catalog_<version>.bin`) and writes
+`version.json` next to it:
+
+```json
+{ "version": 3, "catalog": "catalog_3.bin", "built": "2026-11-16T14:00:00Z" }
+```
+
+The game reads `version.json` first. The same version as its last download keeps
+the cached bundles; a higher one clears them before downloading (this is what
+stops the one-time "CRC Mismatch" errors); a lower one is refused with a popup.
+
+The workflow enforces the sequence before uploading anything:
+
+- `version.json` must exist and name a catalog in the environment folder that has
+  its `.hash`.
+- With no `version.json` published yet, the version must be 0.
+- Otherwise it must be exactly the published version + 1, or the published version
+  again with an unchanged catalog hash (a re-run).
+- To go back to older content, publish it again as the next version.
+
+`version.json` is uploaded last, with `no-cache`, after bundles, catalogs and hashes.
+
 ### Caching and retention
 
 - Bundles receive `public,max-age=31536000,immutable`. **Changed bundle content
   must receive a new filename**, using Unity's hash-based bundle naming. Sync does
   not enforce immutability or refresh cache headers on skipped bundles.
-- Catalogs and hashes receive `public,max-age=60`. Publication is ordered but not
-  atomic; clients/CDNs can temporarily observe different catalog/hash versions.
-  There is no CloudFront invalidation. An atomic release protocol would require
-  corresponding changes to client loading and the release layout.
+- Catalogs and hashes receive `public,max-age=60`. Each release has its own
+  catalog name, and the game only switches when `version.json` (uploaded last,
+  `no-cache`) changes, so it never reads a catalog whose bundles are not uploaded
+  yet. There is no CloudFront invalidation.
 - Nothing is deleted from S3. Old bundles remain available to existing clients.
   Plan retention around supported client versions; blanket expiry can break them.
-- To roll back content, commit the desired catalog/hash and required bundles to
-  `main`, then deploy. Re-running an old workflow still publishes latest `main`.
+- To roll back content, build the older content again as the next version and
+  publish it (see Content versions). Re-running an old workflow still publishes
+  latest `main`.
 
 ### Adding an environment
 

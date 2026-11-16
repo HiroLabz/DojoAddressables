@@ -122,6 +122,40 @@ jobs:
           aws-region: ${{ vars.AWS_REGION }}
           role-session-name: addressables-${{ matrix.env }}-${{ github.run_id }}
 
+      - name: Check the content version follows the published one
+        if: steps.source.outputs.exists == 'true'
+        env:
+          ENV_NAME: ${{ matrix.env }}
+          S3_BUCKET: ${{ vars.S3_BUCKET }}
+          S3_PREFIX: ${{ vars.S3_PREFIX || 'addressables' }}
+        run: |
+          set -euo pipefail
+          dest="s3://${S3_BUCKET}/${S3_PREFIX}"
+          published="$RUNNER_TEMP/published"
+          mkdir -p "$published"
+          # Downloads one published file. Only "not found" counts as absent; any other failure
+          # (no s3:GetObject, network) stops the publish rather than being read as "nothing published".
+          fetch() {
+            if aws s3 cp "$1" "$2" --only-show-errors 2> "$published/error.txt"; then
+              return 0
+            fi
+            if grep -qE '404|NoSuchKey|Not Found' "$published/error.txt"; then
+              return 1
+            fi
+            echo "::error::Could not read $1: $(cat "$published/error.txt")"
+            exit 1
+          }
+          export PUBLISHED_VERSION_FILE="" PUBLISHED_HASH_FILE=""
+          # No version.json on S3 yet means nothing versioned is published: the first must be 0.
+          if fetch "$dest/version.json" "$published/version.json"; then
+            export PUBLISHED_VERSION_FILE="$published/version.json"
+            catalog=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8-sig"))["catalog"])' "$PUBLISHED_VERSION_FILE")
+            if fetch "$dest/${catalog%.*}.hash" "$published/catalog.hash"; then
+              export PUBLISHED_HASH_FILE="$published/catalog.hash"
+            fi
+          fi
+          python3 .github/scripts/addressables.py check-version
+
       - name: Publish bundles, then catalogues, then hashes
         if: steps.source.outputs.exists == 'true'
         env:
@@ -135,3 +169,15 @@ jobs:
           # Always copy mutable metadata, including nested platform catalogs.
           aws s3 cp "$ENV_NAME/" "$dest" --recursive --exclude '*' --include 'catalog*.bin' --include 'catalog*.json' --include '*/catalog*.bin' --include '*/catalog*.json' --no-follow-symlinks --cache-control 'public,max-age=60' --only-show-errors
           aws s3 cp "$ENV_NAME/" "$dest" --recursive --exclude '*' --include 'catalog*.hash' --include '*/catalog*.hash' --no-follow-symlinks --cache-control 'public,max-age=60' --only-show-errors
+
+      - name: Publish version.json last
+        if: steps.source.outputs.exists == 'true'
+        env:
+          ENV_NAME: ${{ matrix.env }}
+          S3_BUCKET: ${{ vars.S3_BUCKET }}
+          S3_PREFIX: ${{ vars.S3_PREFIX || 'addressables' }}
+        run: |
+          set -euo pipefail
+          # Last, so a game that reads the new number can already fetch everything it points at.
+          # no-cache: the game must see a new release as soon as it is published.
+          aws s3 cp "$ENV_NAME/version.json" "s3://${S3_BUCKET}/${S3_PREFIX}/version.json" --no-follow-symlinks --cache-control 'no-cache' --content-type 'application/json' --only-show-errors
