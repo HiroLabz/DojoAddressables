@@ -82,12 +82,23 @@ def validate():
         if not any(hash_file.with_suffix(ext) in catalogs for ext in (".bin", ".json")):
             raise ValueError(f"Missing matching catalog for {hash_file}")
     version, catalog = read_version(root / VERSION_FILE)
-    if not (root / catalog).is_file():
-        raise ValueError(f"{VERSION_FILE} names {catalog}, which is not in {name}/")
-    if not (root / catalog).with_suffix(".hash").is_file():
-        raise ValueError(f"{VERSION_FILE} names {catalog}, which has no matching hash in {name}/")
+    release = release_folder(root, version)
+    if not release.is_dir():
+        raise ValueError(f"{VERSION_FILE} is version {version}, but {release.as_posix()}/ is missing")
+    if not (release / catalog).is_file():
+        raise ValueError(f"{VERSION_FILE} names {catalog}, which is not in {release.as_posix()}/")
+    if not (release / catalog).with_suffix(".hash").is_file():
+        raise ValueError(f"{VERSION_FILE} names {catalog}, which has no matching hash in {release.as_posix()}/")
+    if not any(release.glob("*.bundle")):
+        raise ValueError(f"{release.as_posix()}/ has no bundles")
     print(f"Validated {len(bundles)} bundles, {len(catalogs)} catalogs, {len(hashes)} hashes, "
-          f"content version {version} ({catalog})")
+          f"content version {version} ({release.as_posix()}/{catalog})")
+
+
+def release_folder(root, version):
+    """Each release lives in its own folder, v<version>, so no S3 path is ever reused: the CDN
+    caches bundles for a year, and a bundle can keep its name while its bytes change."""
+    return Path(root) / f"v{version}"
 
 
 def read_version(path):
@@ -132,7 +143,7 @@ def check_version():
         print(f"Content version {published} -> {version} ({catalog})")
         return
     if version == published:
-        local_hash = (root / catalog).with_suffix(".hash").read_text(encoding="utf-8-sig").strip()
+        local_hash = (release_folder(root, version) / catalog).with_suffix(".hash").read_text(encoding="utf-8-sig").strip()
         hash_file = os.environ.get("PUBLISHED_HASH_FILE", "")
         published_hash = (Path(hash_file).read_text(encoding="utf-8-sig").strip()
                           if hash_file and Path(hash_file).is_file() else None)

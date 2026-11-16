@@ -149,8 +149,9 @@ jobs:
           # No version.json on S3 yet means nothing versioned is published: the first must be 0.
           if fetch "$dest/version.json" "$published/version.json"; then
             export PUBLISHED_VERSION_FILE="$published/version.json"
-            catalog=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8-sig"))["catalog"])' "$PUBLISHED_VERSION_FILE")
-            if fetch "$dest/${catalog%.*}.hash" "$published/catalog.hash"; then
+            # The published release's catalogue hash, in its own folder v<version>.
+            hash_path=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1], encoding="utf-8-sig")); print("v%d/%s.hash" % (d["version"], d["catalog"].rsplit(".", 1)[0]))' "$PUBLISHED_VERSION_FILE")
+            if fetch "$dest/$hash_path" "$published/catalog.hash"; then
               export PUBLISHED_HASH_FILE="$published/catalog.hash"
             fi
           fi

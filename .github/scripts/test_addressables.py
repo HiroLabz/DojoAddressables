@@ -91,6 +91,10 @@ class DeploymentTests(unittest.TestCase):
         self.write(f"{folder}/catalog_{version}.{extension}")
         self.write(f"{folder}/catalog_{version}.hash", f"hash{version}")
         if folder == "development":
+            release = f"{folder}/v{version}"
+            self.write(f"{release}/asset.bundle")
+            self.write(f"{release}/catalog_{version}.{extension}")
+            self.write(f"{release}/catalog_{version}.hash", f"hash{version}")
             self.version(version)
 
     def version(self, number, catalog=None, path="development/version.json"):
@@ -111,8 +115,20 @@ class DeploymentTests(unittest.TestCase):
 
     def test_version_names_a_missing_catalog(self):
         self.assets()
+        self.version(1, catalog="catalog_9.bin")
+        with self.assertRaisesRegex(ValueError, "not in development/v1"):
+            addressables.validate()
+
+    def test_release_folder_is_required(self):
+        self.assets()
         self.version(2)
-        with self.assertRaisesRegex(ValueError, "not in development"):
+        with self.assertRaisesRegex(ValueError, "development/v2/ is missing"):
+            addressables.validate()
+
+    def test_release_folder_needs_bundles(self):
+        self.assets()
+        Path("development/v1/asset.bundle").unlink()
+        with self.assertRaisesRegex(ValueError, "has no bundles"):
             addressables.validate()
 
     def test_bad_version_files(self):
@@ -185,6 +201,7 @@ class DeploymentTests(unittest.TestCase):
     def test_missing_bundles(self):
         self.assets()
         Path("development/asset.bundle").unlink()
+        Path("development/v1/asset.bundle").unlink()
         with self.assertRaisesRegex(ValueError, "Output requires"):
             addressables.validate()
 
