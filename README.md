@@ -90,8 +90,24 @@ References: [GitHub OIDC with AWS](https://docs.github.com/en/actions/how-tos/se
 
 Every publish is one release with a whole-number version: 0 for the first, then one
 higher each time. The creator's **Tools > Dojo > Addressables > 3. Build Content
-(Next Version)** builds it with its own catalog (`catalog_<version>.bin`) and writes
-`version.json` next to it:
+(Next Version)** builds it with its own catalog (`catalog_<version>.bin`), copies
+the catalog, its hash and every bundle of that build into a folder of its own,
+`v<version>/`, and writes `version.json` at the top of the build folder. Copy both
+into `development/`:
+
+```
+development/
+  version.json
+  v3/
+    catalog_3.bin
+    catalog_3.hash
+    content_..._<hash>.bundle
+```
+
+A release's files are served from `addressables/v<version>/` and that path is never
+reused. A bundle can keep its name while its bytes change (a Unity upgrade changes
+only the engine version in its header), and bundles are cached for a year, so a
+reused path would keep serving the old bytes and fail the new catalog's CRC check.
 
 ```json
 { "version": 3, "catalog": "catalog_3.bin", "built": "2026-11-16T14:00:00Z" }
@@ -103,8 +119,8 @@ stops the one-time "CRC Mismatch" errors); a lower one is refused with a popup.
 
 The workflow enforces the sequence before uploading anything:
 
-- `version.json` must exist and name a catalog in the environment folder that has
-  its `.hash`.
+- `version.json` must exist, and its `v<version>/` folder must hold the named
+  catalog, its `.hash` and at least one bundle.
 - With no `version.json` published yet, the version must be 0.
 - Otherwise it must be exactly the published version + 1, or the published version
   again with an unchanged catalog hash (a re-run).
