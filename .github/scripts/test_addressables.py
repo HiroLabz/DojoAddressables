@@ -219,5 +219,28 @@ class DeploymentTests(unittest.TestCase):
                     addressables.validate()
 
 
+    def cdn(self, served):
+        def fetch(url):
+            name = url.rsplit("/", 1)[1]
+            return served.get(name, (403, b""))
+        with patch.dict(os.environ, {"CONTENT_URL": "https://cdn.example/addressables/"}):
+            addressables.check_cdn(fetch)
+
+    def test_cdn_new_names_and_unchanged_bundles_pass(self):
+        self.assets()
+        self.write("development/new.bundle", "fresh")
+        self.cdn({"asset.bundle": (200, b"asset")})
+
+    def test_cdn_same_name_with_different_bytes_is_refused(self):
+        self.assets()
+        with self.assertRaisesRegex(ValueError, "CRC check: asset.bundle"):
+            self.cdn({"asset.bundle": (200, b"published long ago")})
+
+    def test_cdn_errors_stop_the_publish(self):
+        self.assets()
+        with self.assertRaisesRegex(ValueError, "HTTP 500"):
+            self.cdn({"asset.bundle": (500, b"")})
+
+
 if __name__ == "__main__":
     unittest.main()
