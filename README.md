@@ -23,6 +23,12 @@ This repository does not run Unity. Currently only `development/` is configured.
    filenames in the same directory. Flat and nested platform layouts work;
    symlinks are rejected. Validation does not decode catalogs, verify their hash
    contents, or check bundle references; test the build in Unity too.
+   `version.json` is the gatekeeper: the version of everything in the environment
+   folder. The catalogue it names, its hash and the bundles sit directly in that
+   folder, beside it: no `v<n>/` folders and no other catalogue. Build it with the
+   creator's **Tools > Dojo > Addressables > 5. Addressable Builder**.
+   The version check reads the published `version.json` from the CDN
+   (`CONTENT_URL`), so the deploy role needs no read access to the bucket.
 5. GitHub OIDC supplies temporary AWS credentials. Bundles sync first, then all
    catalogs are copied, then all hashes are copied. Catalogs and hashes are always
    uploaded so their contents and cache headers are refreshed.
@@ -49,6 +55,7 @@ Under its **Environment variables**, configure:
 | `AWS_ROLE_ARN` | Deployment role ARN scoped to that bucket; set per environment |
 | `AWS_REGION` | Bucket region; environment or repository variable |
 | `S3_PREFIX` | Defaults to `addressables`; environment or repository variable |
+| `CONTENT_URL` | Public address of the published content; defaults to `https://drjkqjn56t2kc.cloudfront.net/addressables` |
 
 Use Variables, not Secrets: the workflow reads `vars`. Repository variables live
 under **Settings > Secrets and variables > Actions > Variables**. Prefixes must
