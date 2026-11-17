@@ -161,6 +161,13 @@ jobs:
           fi
           python3 .github/scripts/addressables.py check-version
 
+      - name: Check no bundle reuses a published name with different bytes
+        if: steps.source.outputs.exists == 'true'
+        env:
+          ENV_NAME: ${{ matrix.env }}
+          CONTENT_URL: ${{ vars.CONTENT_URL || 'https://drjkqjn56t2kc.cloudfront.net/addressables' }}
+        run: python3 .github/scripts/addressables.py check-cdn
+
       - name: Publish bundles, then catalogues, then hashes
         if: steps.source.outputs.exists == 'true'
         env:

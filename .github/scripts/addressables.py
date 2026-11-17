@@ -1,11 +1,15 @@
 """Detect and validate Addressables deployments; uses only the standard library."""
 
+import hashlib
 import json
 import os
 from pathlib import Path
 import re
 import subprocess
 import sys
+import time
+import urllib.error
+import urllib.request
 
 
 SUPPORTED_ENVIRONMENTS = ("development",)
@@ -164,6 +168,49 @@ def check_version():
                      f"so the next must be {published + 1}")
 
 
+def fetch_url(url):
+    """(status, body) for one GET, retried on network errors; 4xx/5xx come back as the status."""
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url), timeout=120) as response:
+                return response.status, response.read()
+        except urllib.error.HTTPError as error:
+            return error.code, b""
+        except urllib.error.URLError as error:
+            if attempt == 2:
+                raise ValueError(f"Could not read {url}: {error.reason}")
+            time.sleep(2 * (attempt + 1))
+
+
+def check_cdn(fetch=fetch_url):
+    """No bundle may keep a name the CDN already serves with different bytes. The CDN caches
+    bundles for a year, so the game would get the old copy and fail the catalogue's CRC check
+    (content version 1, 17 Nov: the script-references bundle, cached since 29 Oct)."""
+    name = os.environ.get("ENV_NAME", "")
+    if name not in SUPPORTED_ENVIRONMENTS:
+        raise ValueError(f"Unsupported environment: {name}")
+    base = os.environ.get("CONTENT_URL", "").strip().rstrip("/")
+    if not base:
+        raise ValueError("Missing CONTENT_URL")
+    root = Path(name)
+    bundles = sorted(root.rglob("*.bundle"))
+    changed = []
+    for path in bundles:
+        relative = path.relative_to(root).as_posix()
+        status, body = fetch(f"{base}/{relative}")
+        if status in (403, 404):
+            continue
+        if status != 200:
+            raise ValueError(f"Could not read {base}/{relative}: HTTP {status}")
+        if hashlib.sha256(body).digest() != hashlib.sha256(path.read_bytes()).digest():
+            changed.append(relative)
+    if changed:
+        raise ValueError("These bundles keep a name the CDN already serves with different bytes, so players "
+                         "would get the old copy and fail its CRC check: " + ", ".join(changed)
+                         + ". Build again with the Addressable Builder, which gives them new names")
+    print(f"Checked {len(bundles)} bundles against the CDN: none reuses a published name with different bytes")
+
+
 if __name__ == "__main__":
     try:
         if sys.argv[1:] == ["detect"]:
@@ -175,8 +222,10 @@ if __name__ == "__main__":
             validate()
         elif sys.argv[1:] == ["check-version"]:
             check_version()
+        elif sys.argv[1:] == ["check-cdn"]:
+            check_cdn()
         else:
-            raise ValueError("Usage: addressables.py detect|validate|check-version")
+            raise ValueError("Usage: addressables.py detect|validate|check-version|check-cdn")
     except (ValueError, subprocess.CalledProcessError) as error:
         print(f"::error::{error}", file=sys.stderr)
         sys.exit(1)
