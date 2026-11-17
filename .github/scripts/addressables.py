@@ -10,10 +10,13 @@ import sys
 
 SUPPORTED_ENVIRONMENTS = ("development",)
 
-# The file the game reads first: which release this is and which catalogue it uses. Written by
-# the addressable creator's "Build Content (Next Version)" menu, uploaded last.
+# The gatekeeper: the version of everything in the environment folder, and the catalogue the
+# game reads. The whole release sits beside it in that one folder. Written by the addressable
+# creator's Addressable Builder, uploaded last.
 VERSION_FILE = "version.json"
 CATALOG_NAME = re.compile(r"^catalog[^/\\]*\.(bin|json)$")
+# A release folder from the old layout, which put each release in v<version>/.
+OLD_RELEASE_FOLDER = re.compile(r"^v\d+$")
 
 
 def git(*args):
@@ -82,23 +85,25 @@ def validate():
         if not any(hash_file.with_suffix(ext) in catalogs for ext in (".bin", ".json")):
             raise ValueError(f"Missing matching catalog for {hash_file}")
     version, catalog = read_version(root / VERSION_FILE)
-    release = release_folder(root, version)
-    if not release.is_dir():
-        raise ValueError(f"{VERSION_FILE} is version {version}, but {release.as_posix()}/ is missing")
-    if not (release / catalog).is_file():
-        raise ValueError(f"{VERSION_FILE} names {catalog}, which is not in {release.as_posix()}/")
-    if not (release / catalog).with_suffix(".hash").is_file():
-        raise ValueError(f"{VERSION_FILE} names {catalog}, which has no matching hash in {release.as_posix()}/")
-    if not any(release.glob("*.bundle")):
-        raise ValueError(f"{release.as_posix()}/ has no bundles")
+    # One flat folder, one release: version.json, the catalogue it names, its hash and the bundles
+    # all sit directly in the environment folder.
+    old = sorted(p.name for p in root.iterdir() if p.is_dir() and OLD_RELEASE_FOLDER.match(p.name))
+    if old:
+        raise ValueError(f"{name}/ has version folders from the old layout ({', '.join(old)}): the release "
+                         f"goes straight into {name}/. Build it with the Addressable Builder, which removes them")
+    if not (root / catalog).is_file():
+        raise ValueError(f"{VERSION_FILE} names {catalog}, which is not in {name}/")
+    if not (root / catalog).with_suffix(".hash").is_file():
+        raise ValueError(f"{VERSION_FILE} names {catalog}, which has no matching hash in {name}/")
+    others = sorted(p.name for p in root.iterdir()
+                    if p.is_file() and CATALOG_NAME.match(p.name) and p.name != catalog)
+    if others:
+        raise ValueError(f"{name}/ holds one release, but has catalogues {VERSION_FILE} does not name: "
+                         f"{', '.join(others)}. Build it with the Addressable Builder, which removes them")
+    if not any(root.glob("*.bundle")):
+        raise ValueError(f"{name}/ has no bundles")
     print(f"Validated {len(bundles)} bundles, {len(catalogs)} catalogs, {len(hashes)} hashes, "
-          f"content version {version} ({release.as_posix()}/{catalog})")
-
-
-def release_folder(root, version):
-    """Each release lives in its own folder, v<version>, so no S3 path is ever reused: the CDN
-    caches bundles for a year, and a bundle can keep its name while its bytes change."""
-    return Path(root) / f"v{version}"
+          f"content version {version} ({name}/{catalog})")
 
 
 def read_version(path):
@@ -106,7 +111,7 @@ def read_version(path):
     path = Path(path)
     if not path.is_file():
         raise ValueError(f"Missing {path}: build with Tools > Dojo > Addressables > "
-                         "3. Build Content (Next Version)")
+                         "5. Addressable Builder")
     try:
         data = json.loads(path.read_text(encoding="utf-8-sig"))
     except (ValueError, UnicodeDecodeError) as error:
@@ -143,7 +148,7 @@ def check_version():
         print(f"Content version {published} -> {version} ({catalog})")
         return
     if version == published:
-        local_hash = (release_folder(root, version) / catalog).with_suffix(".hash").read_text(encoding="utf-8-sig").strip()
+        local_hash = (root / catalog).with_suffix(".hash").read_text(encoding="utf-8-sig").strip()
         hash_file = os.environ.get("PUBLISHED_HASH_FILE", "")
         published_hash = (Path(hash_file).read_text(encoding="utf-8-sig").strip()
                           if hash_file and Path(hash_file).is_file() else None)

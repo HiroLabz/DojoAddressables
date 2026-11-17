@@ -126,32 +126,36 @@ jobs:
         if: steps.source.outputs.exists == 'true'
         env:
           ENV_NAME: ${{ matrix.env }}
-          S3_BUCKET: ${{ vars.S3_BUCKET }}
-          S3_PREFIX: ${{ vars.S3_PREFIX || 'addressables' }}
+          # The public address the game reads content from. Read here instead of S3, so the deploy
+          # role needs no read access to the bucket (S3 reads answered 403 and stopped every publish).
+          CONTENT_URL: ${{ vars.CONTENT_URL || 'https://drjkqjn56t2kc.cloudfront.net/addressables' }}
         run: |
           set -euo pipefail
-          dest="s3://${S3_BUCKET}/${S3_PREFIX}"
+          base="${CONTENT_URL%/}"
           published="$RUNNER_TEMP/published"
           mkdir -p "$published"
-          # Downloads one published file. Only "not found" counts as absent; any other failure
-          # (no s3:GetObject, network) stops the publish rather than being read as "nothing published".
+          # Downloads one published file. 404, or 403 from the CDN for a file it does not have, counts
+          # as absent; any other failure stops the publish rather than being read as "nothing published".
           fetch() {
-            if aws s3 cp "$1" "$2" --only-show-errors 2> "$published/error.txt"; then
-              return 0
-            fi
-            if grep -qE '404|NoSuchKey|Not Found' "$published/error.txt"; then
-              return 1
-            fi
-            echo "::error::Could not read $1: $(cat "$published/error.txt")"
-            exit 1
+            local status
+            status=$(curl -sS -o "$2" -w '%{http_code}' -H 'Cache-Control: no-cache' --retry 3 --retry-all-errors "$1?ts=$(date +%s)") || {
+              echo "::error::Could not read $1"
+              exit 1
+            }
+            case "$status" in
+              200) return 0 ;;
+              403|404) rm -f "$2"; return 1 ;;
+              *) echo "::error::Could not read $1: HTTP $status"; exit 1 ;;
+            esac
           }
           export PUBLISHED_VERSION_FILE="" PUBLISHED_HASH_FILE=""
-          # No version.json on S3 yet means nothing versioned is published: the first must be 0.
-          if fetch "$dest/version.json" "$published/version.json"; then
+          # No version.json published yet means nothing versioned is published: the first must be 0.
+          # A version.json that cannot be read also lands here, and is refused for any version but 0.
+          if fetch "$base/version.json" "$published/version.json"; then
             export PUBLISHED_VERSION_FILE="$published/version.json"
-            # The published release's catalogue hash, in its own folder v<version>.
-            hash_path=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1], encoding="utf-8-sig")); print("v%d/%s.hash" % (d["version"], d["catalog"].rsplit(".", 1)[0]))' "$PUBLISHED_VERSION_FILE")
-            if fetch "$dest/$hash_path" "$published/catalog.hash"; then
+            # The published release's catalogue hash, beside version.json.
+            hash_name=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1], encoding="utf-8-sig")); print(d["catalog"].rsplit(".", 1)[0] + ".hash")' "$PUBLISHED_VERSION_FILE")
+            if fetch "$base/$hash_name" "$published/catalog.hash"; then
               export PUBLISHED_HASH_FILE="$published/catalog.hash"
             fi
           fi
