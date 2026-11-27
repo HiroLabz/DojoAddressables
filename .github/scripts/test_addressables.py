@@ -170,13 +170,17 @@ class DeploymentTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "must be 0"):
             self.check()
 
-    def test_next_version_is_one_higher(self):
+    def test_next_version_is_higher(self):
         self.assets(version=4)
         self.check(published=3)
-        for published, message in ((5, "lower"), (2, "skips ahead")):
-            with self.subTest(published=published):
-                with self.assertRaisesRegex(ValueError, message):
-                    self.check(published=published)
+        with self.assertRaisesRegex(ValueError, "lower"):
+            self.check(published=5)
+
+    def test_next_version_may_skip_one_that_never_reached_the_cdn(self):
+        # v3 pushed but its deploy failed, so the CDN still has v2 when the Builder makes v4.
+        self.assets(version=4)
+        self.check(published=2)
+        self.check(published=0)
 
     def test_same_version_only_when_unchanged(self):
         self.assets(version=3)

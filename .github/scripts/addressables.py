@@ -132,8 +132,13 @@ def read_version(path):
 
 
 def check_version():
-    """The new version must follow the published one: exactly one higher, or the same release
-    again unchanged (a re-run). With nothing published yet, it must be 0."""
+    """The new version must follow the published one: higher, or the same release again unchanged
+    (a re-run). With nothing published yet, it must be 0.
+
+    Higher by any amount, not exactly one: the Addressable Builder numbers a build from GitHub's
+    main, and a version pushed there whose deploy then failed never reached the CDN. The next
+    build is one past GitHub's, so it is more than one past the CDN's (content v3's deploy failed
+    on 18 Nov; v4 was refused as "skips ahead" on 19 Nov). Versions still only go forward."""
     name = os.environ.get("ENV_NAME", "")
     if name not in SUPPORTED_ENVIRONMENTS:
         raise ValueError(f"Unsupported environment: {name}")
@@ -148,8 +153,10 @@ def check_version():
         return
 
     published, published_catalog = read_version(published_file)
-    if version == published + 1:
-        print(f"Content version {published} -> {version} ({catalog})")
+    if version > published:
+        skipped = version - published - 1
+        note = f", skipping {skipped} version(s) that never reached the CDN" if skipped else ""
+        print(f"Content version {published} -> {version} ({catalog}){note}")
         return
     if version == published:
         local_hash = (root / catalog).with_suffix(".hash").read_text(encoding="utf-8-sig").strip()
@@ -161,11 +168,8 @@ def check_version():
             return
         raise ValueError(f"Content version {version} is already published with different content. "
                          f"Build the next version ({published + 1}) instead")
-    if version < published:
-        raise ValueError(f"Content version {version} is lower than the published version {published}. "
-                         f"To go back, publish the old content again as version {published + 1}")
-    raise ValueError(f"Content version {version} skips ahead: the published version is {published}, "
-                     f"so the next must be {published + 1}")
+    raise ValueError(f"Content version {version} is lower than the published version {published}. "
+                     f"To go back, publish the old content again as version {published + 1}")
 
 
 def fetch_url(url):
